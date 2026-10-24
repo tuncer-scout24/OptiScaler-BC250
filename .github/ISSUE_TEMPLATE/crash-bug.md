@@ -1,13 +1,16 @@
 ---
 name: Crash/Bug
-about: This template is for reporting issues when using OptiScaler
+about: Report an issue with the unofficial BC250 builds in this repository
 title: ''
 labels: ''
 assignees: ''
 
 ---
 
-**Since there has been an active increase in new issues without any basic info to help troubleshooting, we're releasing this Issue Report Template that should help troubleshoot without our magic 8 ball. Going forward, issues that do not follow the Template will be ignored.**
+These are independently maintained BC250 builds of
+[OptiScaler](https://github.com/optiscaler/OptiScaler), developed by the upstream
+OptiScaler team and contributors. Please report problems with these builds here.
+Include the BC250 alpha release tag and the details below to help reproduce the issue.
 
 #### Game name and version:
 *Example:* Cyberpunk 2077 (Steam), Avowed (GamePass/UWP)
@@ -16,7 +19,7 @@ assignees: ''
 *Example:* OptiScaler_v0.7.7-pre7_20250316 + Fakenvapi 1.2.1 + Nukem 0.122 - OptiScaler version most important
 
 #### GPU
-*Example:*  RTX 4070Ti, RX 7800XT
+*Example:* AMD BC250 / GFX1013 (1002:13FE)
 
 #### OS 
 *Example:*  Win 10/11, Linux

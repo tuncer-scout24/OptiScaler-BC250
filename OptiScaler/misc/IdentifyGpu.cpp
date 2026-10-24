@@ -11,6 +11,9 @@
 
 using Microsoft::WRL::ComPtr;
 
+// AMD BC-250 / GFX1013, not present in the bundled device_info database.
+constexpr uint32_t bc250DeviceId = 0x13FE;
+
 // DXVK reports revision 0, then any entry of the device id is used, they share the generation
 static std::optional<device_info::CardInfo> GetAmdCardInfo(const GpuInformation& gpuInfo)
 {
@@ -114,10 +117,11 @@ std::vector<GpuInformation> IdentifyGpu::checkGpuInfo()
                         {
                             VkPhysicalDeviceProperties props {};
                             pvkGetProps(vkPhysDev, &props);
-                            if (props.vendorID != gpuInfo.vendorId)
+                            if (props.vendorID != gpuInfo.vendorId || props.deviceID != gpuInfo.deviceId)
                             {
-                                LOG_INFO("DXVK: unspoofing vendorId {:04X} -> {:04X} ({})", (uint32_t) gpuInfo.vendorId,
-                                         props.vendorID, props.deviceName);
+                                LOG_INFO("DXVK: unspoofing GPU {:04X}:{:04X} -> {:04X}:{:04X} ({})",
+                                         (uint32_t) gpuInfo.vendorId, gpuInfo.deviceId, props.vendorID, props.deviceID,
+                                         props.deviceName);
                                 gpuInfo.vendorId = (VendorId::Value) props.vendorID;
                                 gpuInfo.deviceId = props.deviceID;
                                 gpuInfo.name = props.deviceName;
@@ -136,6 +140,12 @@ std::vector<GpuInformation> IdentifyGpu::checkGpuInfo()
 
                 if (cardInfo.has_value())
                     gpuInfo.amdHwGeneration = cardInfo.value().generation;
+
+                if (gpuInfo.deviceId == bc250DeviceId)
+                {
+                    gpuInfo.amdHwGeneration = device_info::HwGeneration::kGfx10;
+                    LOG_INFO("Recognized AMD BC-250 (GFX1013), PCI ID 1002:13FE");
+                }
 
                 auto asicInfoValid = queryAmdAsicInfo(gpuInfo.luid, gpuInfo.vendorId, gpuInfo.deviceId,
                                                       gpuInfo.amdAsicFamily, gpuInfo.amdAsicRevision);
@@ -536,8 +546,8 @@ void IdentifyGpu::updateD3d12Capabilities(D3d12Proxy::PFN_D3D12CreateDevice o_D3
                     // Check for native INT8 support, the same way the driver picks the model
                     // Don't treat this as real because RDNA3 on Linux may be able to support FP8, useful for FG
                     // Asic family reported on Linux is unreliable, device_info takes precedence there when it
-                    // knows the card
-                    bool preferDeviceInfo = State::Instance().isRunningOnLinux &&
+                    // knows the card. BC-250 uses its PCI-ID match instead of the database.
+                    bool preferDeviceInfo = State::Instance().isRunningOnLinux && gpuInfo.deviceId != bc250DeviceId &&
                                             gpuInfo.amdHwGeneration != device_info::HwGeneration::kUndefinedGeneration;
 
                     if (res.fsr4Support == FSR4Support::None && !preferDeviceInfo &&
@@ -827,6 +837,12 @@ bool IdentifyGpu::queryAmdAsicInfo(LUID luid, uint32_t vendorId, uint32_t device
 
 FSR4Support IdentifyGpu::getFsr4ModelForAsic(uint32_t family, uint32_t revision, uint32_t deviceId, bool asicInfoValid)
 {
+    // BC-250 uses the INT8 model with a compatible Linux RADV stack. Match the PCI ID before
+    // ASIC-family heuristics: GFX1013 is missing from device_info and Wine can report another family.
+    // This selects a model; it does not add the driver/compiler support needed to execute it.
+    if (deviceId == bc250DeviceId)
+        return FSR4Support::INT8;
+
     // Family ids and revision ranges (min <= revision < max) from amdgpu_asic_addr.h
     constexpr uint32_t familyNv = 143;  // Navi 1x/2x
     constexpr uint32_t familyVgh = 144; // Van Gogh

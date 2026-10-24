@@ -138,7 +138,10 @@ md $(SolutionDir)x64\Release\a\Licenses
 del /Q $(SolutionDir)x64\Release\a\Licenses\*.*
 copy $(SolutionDir)external\xess\LICENSE.txt $(SolutionDir)x64\Release\a\Licenses\XeSS_LICENSE.txt /Y
 md $(SolutionDir)x64\Release\a\OptiScaler
+md $(SolutionDir)x64\Release\a\OptiScaler\Licenses
 copy $(SolutionDir)external\xess\bin\*.dll $(SolutionDir)x64\Release\a\OptiScaler\ /Y
+copy "$(SolutionDir)external\fsr4\amdvkffx64.dll" "$(SolutionDir)x64\Release\a\OptiScaler\" /Y
+copy "$(SolutionDir)external\fsr4\amdxcffx64.dll" "$(SolutionDir)x64\Release\a\OptiScaler\" /Y
 copy $(SolutionDir)external\FidelityFX-SDK\docs\license.md $(SolutionDir)x64\Release\a\OptiScaler\Licenses\FidelityFX_v1_LICENSE.md /Y
 copy $(SolutionDir)external\FidelityFX-SDK\PrebuiltSignedDLL\amd_fidelityfx_vk.dll $(SolutionDir)x64\Release\a\OptiScaler\ /Y
 copy $(SolutionDir)external\FidelityFX-SDK-v2\Kits\FidelityFX\signedbin\amd_fidelityfx_loader_dx12.dll $(SolutionDir)x64\Release\a\OptiScaler\ /Y

@@ -1,5 +1,11 @@
 # Contributing to OptiScaler
 
+This repository maintains unofficial BC250 compatibility builds of
+[OptiScaler](https://github.com/optiscaler/OptiScaler). Please target BC250 changes
+and pull requests at `master` in `tuncer-scout24/OptiScaler-BC250`. BC250 support
+and issue reports belong in this repository. The upstream team's contribution
+requirements below are retained for work on the shared codebase.
+
 To maintain build efficiency and project structure, please follow these requirements for all code contributions.
 
 ### Precompiled Header (PCH) Usage
