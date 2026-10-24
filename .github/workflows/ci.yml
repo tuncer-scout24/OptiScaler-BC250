@@ -85,6 +85,7 @@ jobs:
         with:
           artifact-ids: ${{ needs.build.outputs.artifact-ids }}
           merge-multiple: true
+          skip-decompress: true
           path: artifacts
 
       - name: Verify ZIP and checksum
