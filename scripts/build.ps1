@@ -24,6 +24,8 @@ try {
         "OptiScaler.ini",
         "setup_linux.sh",
         "setup_windows.bat",
+        "OptiScaler/amdvkffx64.dll",
+        "OptiScaler/amdxcffx64.dll",
         "OptiScaler/amd_fidelityfx_loader_dx12.dll",
         "OptiScaler/amd_fidelityfx_upscaler_dx12.dll",
         "OptiScaler/D3D12_OptiScaler/D3D12Core.dll"
@@ -37,6 +39,7 @@ try {
     New-Item -ItemType Directory -Force -Path "$packageRoot/profiles", "$packageRoot/docs" | Out-Null
     Copy-Item "profiles/BC250.ini" "$packageRoot/profiles/BC250.ini" -Force
     Copy-Item "docs/BC250.md" "$packageRoot/docs/BC250.md" -Force
+    Copy-Item "external/fsr4/README.md" "$packageRoot/docs/FSR4-providers.md" -Force
     Copy-Item LICENSE $packageRoot -Force
 
     $versionHeader = Get-Content "OptiScaler/resource.h" -Raw
