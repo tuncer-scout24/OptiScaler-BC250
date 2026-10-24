@@ -547,9 +547,8 @@ void IdentifyGpu::updateD3d12Capabilities(D3d12Proxy::PFN_D3D12CreateDevice o_D3
                     // Don't treat this as real because RDNA3 on Linux may be able to support FP8, useful for FG
                     // Asic family reported on Linux is unreliable, device_info takes precedence there when it
                     // knows the card. BC-250 uses its PCI-ID match instead of the database.
-                    bool preferDeviceInfo = State::Instance().isRunningOnLinux &&
-                                            gpuInfo.amdHwGeneration != device_info::HwGeneration::kUndefinedGeneration &&
-                                            gpuInfo.deviceId != bc250DeviceId;
+                    bool preferDeviceInfo = State::Instance().isRunningOnLinux && gpuInfo.deviceId != bc250DeviceId &&
+                                            gpuInfo.amdHwGeneration != device_info::HwGeneration::kUndefinedGeneration;
 
                     if (res.fsr4Support == FSR4Support::None && !preferDeviceInfo &&
                         IsFsr4Int8(gpuInfo.fsr4DriverModel))
