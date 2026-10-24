@@ -2,7 +2,7 @@
 
 These user-supplied Windows x64 provider DLLs are included starting with BC250
 Alpha 2. Both report file version `2.4.0.4370` and contain INT8 provider classes.
-Game/runtime compatibility still needs testing on BC250.
+The maintainer has reported successful testing on BC250.
 
 | Source file | Path in the release ZIP | SHA256 |
 | --- | --- | --- |
