@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
-    [string]$OutputDirectory = "artifacts"
+    [string]$OutputDirectory = "artifacts",
+    [ValidatePattern('^(bc250-alpha\.[0-9]+)?$')]
+    [string]$ReleaseTag = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -55,6 +57,10 @@ try {
         throw "Cannot determine the source commit."
     }
     $fileName = "OptiScaler_v$($versionParts[0]).$($versionParts[1]).$($versionParts[2])-pre$($versionParts[3])_BC250_$commit.zip"
+    if ($ReleaseTag) {
+        $alphaNumber = $ReleaseTag.Substring("bc250-alpha.".Length)
+        $fileName = "OptiScaler_BC250_Alpha$alphaNumber.zip"
+    }
     $outputPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
     New-Item -ItemType Directory -Force -Path $outputPath | Out-Null
     $archive = Join-Path $outputPath $fileName
