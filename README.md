@@ -1,3 +1,35 @@
+# OptiScaler — unofficial BC250 builds
+
+[OptiScaler](https://github.com/optiscaler/OptiScaler) is developed by the upstream
+OptiScaler team and contributors. Thank you for making this project available.
+
+This independently maintained fork focuses on getting OptiScaler working on AMD
+BC250 hardware. Its contributions are limited to:
+
+- BC250 / GFX1013 GPU recognition and FSR 4 INT8 configuration.
+- Bundling the supplied, unchanged AMD provider DLLs.
+- Build automation, release packaging, and BC250 setup documentation.
+
+The underlying upscaling, frame-generation, and compatibility implementations are
+the work of the upstream project and its contributors. The provider DLLs are AMD
+binaries. Upstream credits, copyright notices, and the GPL-3.0 license are retained.
+
+**[Download unofficial BC250 builds](https://github.com/tuncer-scout24/OptiScaler-BC250/releases)**
+· **[BC250 setup and build instructions](docs/BC250.md)**
+· **[Report a BC250 issue](https://github.com/tuncer-scout24/OptiScaler-BC250/issues)**
+
+These builds are maintained independently of the upstream OptiScaler team.
+Please report issues with this fork in this repository.
+
+The upstream starting point for this fork is
+[`fd3a45a6`](https://github.com/optiscaler/OptiScaler/commit/fd3a45a6cac6d610a35c570479f80dae95ca4eac).
+Commit history is preserved so upstream work and BC250 changes remain attributable.
+
+## Upstream OptiScaler documentation and credits
+
+The original project documentation and links below are retained as upstream
+reference material. Use the BC250 download and support links above for this fork.
+
 <div align="center">
 
   ![Logo](https://github.com/user-attachments/assets/c7dad5da-0b29-4710-8a57-b58e4e407abd)
@@ -6,6 +38,7 @@
 <hr />
 <br />
 <div align="center">
+  <p><strong>Support the upstream OptiScaler developers</strong></p>
   <a href="https://github.com/sponsors/cdozdil?frequency=one-time"><img src="images/gh-sponsor-red.png" /></a>
   <a href="https://buymeacoffee.com/nitec"><img src="images/bmac.png" /></a>
 </div>

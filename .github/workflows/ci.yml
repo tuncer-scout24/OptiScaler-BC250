@@ -1,0 +1,150 @@
+name: Build and package
+
+on:
+  push:
+    branches: ['**']
+    tags: ['bc250-alpha.*']
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Release x64
+    runs-on: windows-2022
+    timeout-minutes: 45
+    outputs:
+      artifact-ids: ${{ steps.package.outputs.artifact-id }},${{ steps.checksum.outputs.artifact-id }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out source and dependencies
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Set up Visual Studio 2022 MSBuild
+        uses: microsoft/setup-msbuild@v3
+        with:
+          vs-version: '[17.0,18.0)'
+          msbuild-architecture: x64
+
+      - name: Build and package
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: ./scripts/build.ps1 -ReleaseTag $env:RELEASE_TAG
+
+      - name: Upload directly usable ZIP
+        id: package
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          path: artifacts/*.zip
+          archive: false
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload checksum
+        id: checksum
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          path: artifacts/*.sha256
+          archive: false
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7.0.0
+        with:
+          name: msbuild-log-${{ github.sha }}
+          path: build.binlog
+          if-no-files-found: warn
+          retention-days: 7
+
+  release:
+    name: Publish BC250 alpha
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/bc250-alpha.')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download the exact build outputs
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact-ids }}
+          merge-multiple: true
+          skip-decompress: true
+          path: artifacts
+
+      - name: Verify ZIP and checksum
+        id: verify
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        working-directory: artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^bc250-alpha\.[0-9]+$ ]]
+          alpha_number="${RELEASE_TAG#bc250-alpha.}"
+          archive="OptiScaler_BC250_Alpha${alpha_number}.zip"
+          sha256sum --check "$archive.sha256"
+          unzip -tq "$archive"
+          python3 - "$archive" <<'PY'
+          import sys, zipfile
+          with zipfile.ZipFile(sys.argv[1]) as package:
+              names = set(package.namelist())
+              required = {
+                  "OptiScaler.dll", "OptiScaler.ini", "setup_linux.sh", "setup_windows.bat",
+                  "OptiScaler/amdvkffx64.dll", "OptiScaler/amdxcffx64.dll",
+              }
+              if not required <= names:
+                  raise SystemExit(f"Missing runtime files: {sorted(required - names)}")
+              if any(name.lower().endswith((".zip", ".7z")) for name in names):
+                  raise SystemExit("Nested archive found in runtime ZIP")
+          PY
+          echo "release-name=OptiScaler BC250 Alpha $alpha_number — unofficial build" >> "$GITHUB_OUTPUT"
+
+      - name: Publish build outputs as a prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ steps.verify.outputs.release-name }}
+          tag_name: ${{ github.ref_name }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          make_latest: false
+          fail_on_unmatched_files: true
+          overwrite_files: false
+          files: |
+            artifacts/OptiScaler_BC250_Alpha*.zip
+            artifacts/OptiScaler_BC250_Alpha*.zip.sha256
+          body: |
+            Unofficial BC250 build of [OptiScaler](https://github.com/optiscaler/OptiScaler),
+            developed by the upstream OptiScaler team and contributors. Thank you for making OptiScaler available.
+            This independently maintained fork contributes limited BC250 compatibility, configuration,
+            and packaging changes. The bundled provider DLLs are supplied, unchanged AMD binaries.
+            Please report issues with these builds in this repository.
+
+            BC250 alpha build with GPU recognition, FSR 4 INT8 configuration, and bundled AMD x64 providers.
+
+            Download the runtime ZIP below and extract it once into the game executable folder.
+            It contains OptiScaler.dll, OptiScaler.ini, setup scripts, and the OptiScaler runtime directory,
+            including amdxcffx64.dll and amdvkffx64.dll (file version 2.4.0.4370).
+            There is no nested archive. The release ZIP and checksum are the exact build artifacts.
+
+            The optional profiles/BC250.ini selects FSR 4 INT8; back up an existing INI before using it.
+            A compatible BC250 RADV/Proton stack is still required. Builds are unsigned and hardware/game testing is pending.
+
+            Source commit: ${{ github.sha }}
+            Build: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}

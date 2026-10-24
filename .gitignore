@@ -419,6 +419,8 @@ FodyWeavers.xsd
 *.dll
 
 !external/directx_agility_sdk/lib/D3D12Core.dll
+!external/fsr4/amdvkffx64.dll
+!external/fsr4/amdxcffx64.dll
 
 # Fortran module files
 *.mod
@@ -440,3 +442,5 @@ CyberFSR/imgui.ini
 /OptiScaler/resource_build_commit.h
 /OptiScaler/misc/Telemetry.cpp
 /OptiScaler/misc/Telemetry.h
+/.idea/
+/artifacts/
