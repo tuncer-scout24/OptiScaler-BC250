@@ -11,6 +11,9 @@
 </div>
 <br />
 
+For this fork's AMD BC-250 GPU recognition, FSR 4 INT8 profile, and GitHub build
+instructions, see [BC-250 configuration and builds](docs/BC250.md).
+
 ## Table of Contents
 
 **1.** [**About**](#about)  
