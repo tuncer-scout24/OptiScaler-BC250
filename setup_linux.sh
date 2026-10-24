@@ -50,6 +50,8 @@ echo ""
 
 # Get the script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
+cd -- "$SCRIPT_DIR" || exit 1
 OPTISCALER_FILE="$SCRIPT_DIR/OptiScaler.dll"
 
 # Remove junk files
@@ -265,6 +267,10 @@ create_uninstaller() {
     cat > "remove_optiscaler.sh" << 'EOF'
 #!/usr/bin/env bash
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_PATH="$SCRIPT_DIR/$(basename -- "${BASH_SOURCE[0]}")"
+cd -- "$SCRIPT_DIR" || exit 1
+
 show_help() {
     echo ""
     echo "Usage: $0 [OPTIONS]"
@@ -303,27 +309,43 @@ if [ "$remove_choice" = "y" ] || [ "$remove_choice" = "Y" ]; then
     echo ""
     echo "Removing OptiScaler files..."
     
-    # Remove OptiScaler files
-    rm -f OptiScaler.log
-    rm -f OptiScaler.ini
-    rm -f SELECTED_FILENAME_PLACEHOLDER
-    rm -f fakenvapi.dll
-    rm -f fakenvapi.ini
-    rm -f fakenvapi.log
-    rm -f dlssg_to_fsr3_amd_is_better.dll
-    rm -f dlssg_to_fsr3.log
-    
-    # Remove directories
-    rm -rf D3D12_Optiscaler
-    rm -rf DlssOverrides
-    rm -rf Licenses
+    # Remove the injected DLL, configuration, logs and files shipped by this fork.
+    rm -f -- OptiScaler.log OptiScaler.ini OptiScaler.dll OptiScaler.asi "SELECTED_FILENAME_PLACEHOLDER" \
+        fakenvapi.dll fakenvapi.ini fakenvapi.log \
+        dlssg_to_fsr3_amd_is_better.dll dlssg_to_fsr3.log \
+        setup_linux.sh setup_windows.bat "Remove_OptiScaler.bat" "Remove OptiScaler.bat" \
+        "!! EXTRACT ALL FILES TO GAME FOLDER !!" \
+        docs/BC250.md docs/FSR4-providers.md profiles/BC250.ini \
+        Licenses/XeSS_LICENSE.txt Licenses/FidelityFX_v2_LICENSE.md \
+        Licenses/DirectX_LICENSE.txt Licenses/OptiScaler_LICENSE.txt || exit 1
+
+    # Current runtime tree includes the AMD providers and nested SDK/license folders.
+    # The other trees are names used by older OptiScaler packages.
+    rm -rf -- OptiScaler D3D12_OptiScaler D3D12_Optiscaler DlssOverrides || exit 1
+
+    # Alpha 1/2 shipped GPL text as a generic root LICENSE. Remove only that exact
+    # text, allowing Windows line endings; preserve a game's different LICENSE.
+    if [ -f LICENSE ]; then
+        legacy_license_hash=""
+        if command -v sha256sum >/dev/null 2>&1; then
+            legacy_license_hash=$(tr -d '\r' < LICENSE | sha256sum)
+        elif command -v shasum >/dev/null 2>&1; then
+            legacy_license_hash=$(tr -d '\r' < LICENSE | shasum -a 256)
+        fi
+        if [ "${legacy_license_hash%% *}" = "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986" ]; then
+            rm -f -- LICENSE || exit 1
+        fi
+    fi
+
+    # Shared folders may also contain game/user files, so remove them only if empty.
+    rmdir -- docs profiles Licenses 2>/dev/null || true
     
     echo ""
     echo "OptiScaler removed!"
     echo ""
     
     # Remove this uninstaller
-    rm -f "$0"
+    rm -f -- "$SCRIPT_PATH"
 else
     echo ""
     echo "Operation cancelled."
@@ -374,6 +396,6 @@ if [ $# -eq 0 ]; then
     read -p "Press Enter to exit..."
 fi
 
-rm -f "$0"
+rm -f -- "$SCRIPT_PATH"
 
 exit 0

@@ -1,5 +1,6 @@
 REM Setup OptiScaler for your game
 @echo off
+cd /d "%~dp0" || exit /b 1
 cls
 echo  ::::::::  :::::::::  ::::::::::: :::::::::::  ::::::::   ::::::::      :::     :::        :::::::::: :::::::::  
 echo :+:    :+: :+:    :+:     :+:         :+:     :+:    :+: :+:    :+:   :+: :+:   :+:        :+:        :+:    :+: 
@@ -421,6 +422,9 @@ setlocal DisableDelayedExpansion
 
 (
 echo @echo off
+echo setlocal DisableDelayedExpansion
+echo set "UNINSTALLER_PATH=%%~f0"
+echo cd /d "%%~dp0" ^|^| exit /b 1
 echo setlocal EnableDelayedExpansion
 echo cls
 echo echo  ::::::::  :::::::::  ::::::::::: :::::::::::  ::::::::   ::::::::      :::     :::        :::::::::: :::::::::  
@@ -468,25 +472,27 @@ echo set /p removeChoice="Waiting - "
 echo echo.
 
 echo if "%%removeChoice%%"=="1" ^(
-echo     del OptiScaler.log
-echo     del OptiScaler.ini
-echo     del OptiScaler.asi
-echo     for %%%%F in ^(!OPTI_DLL_LIST!^) do ^(del "%%%%F"^)
-echo     del /Q Licenses\*
-echo     rd Licenses
-echo     del /Q OptiScaler\D3D12_Optiscaler\*
-echo     rd OptiScaler\D3D12_Optiscaler
-echo     del /Q OptiScaler\Streamline\*
-echo     rd OptiScaler\Streamline
-echo     del /Q OptiScaler\streamline\*
-echo     rd OptiScaler\streamline
-echo     echo.
-echo     echo Deleting OptiPatcher if present
-echo     del /Q OptiScaler\plugins\*
-echo     rd OptiScaler\plugins
-echo     echo.
-echo     del /Q OptiScaler\*
-echo     rd OptiScaler
+echo     del /F /Q OptiScaler.log OptiScaler.ini OptiScaler.dll OptiScaler.asi 2^>nul
+echo     for %%%%F in ^(!OPTI_DLL_LIST!^) do ^(del /F /Q "%%%%F"^)
+echo     setlocal DisableDelayedExpansion
+echo     del /F /Q fakenvapi.dll fakenvapi.ini fakenvapi.log dlssg_to_fsr3_amd_is_better.dll dlssg_to_fsr3.log 2^>nul
+echo     del /F /Q setup_linux.sh setup_windows.bat remove_optiscaler.sh "Remove OptiScaler.bat" "!! EXTRACT ALL FILES TO GAME FOLDER !!" 2^>nul
+echo     del /F /Q docs\BC250.md docs\FSR4-providers.md profiles\BC250.ini 2^>nul
+echo     del /F /Q Licenses\XeSS_LICENSE.txt Licenses\FidelityFX_v2_LICENSE.md Licenses\DirectX_LICENSE.txt Licenses\OptiScaler_LICENSE.txt 2^>nul
+echo     if exist "OptiScaler" rd /S /Q "OptiScaler"
+echo     if exist "D3D12_OptiScaler" rd /S /Q "D3D12_OptiScaler"
+echo     if exist "DlssOverrides" rd /S /Q "DlssOverrides"
+echo     if exist "OptiScaler" ^(
+echo         echo ERROR: OptiScaler runtime files could not be removed. Close the game and try again.
+echo         pause
+echo         exit /b 1
+echo     ^)
+echo     REM Remove legacy Alpha 1/2 root LICENSE only when it matches the shipped GPL text.
+echo     powershell -NoProfile -Command "if (Test-Path -LiteralPath 'LICENSE' -PathType Leaf) { $text = [IO.File]::ReadAllText((Join-Path (Get-Location) 'LICENSE')).Replace([string][char]13, ''); $sha = [Security.Cryptography.SHA256]::Create(); try { $hash = [BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text))).Replace('-', '').ToLowerInvariant(); if ($hash -eq '3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986') { Remove-Item -LiteralPath 'LICENSE' -Force } } finally { $sha.Dispose() } }"
+echo     REM Keep unrelated game/user files in these shared folders.
+echo     rd docs 2^>nul
+echo     rd profiles 2^>nul
+echo     rd Licenses 2^>nul
 echo     echo.
 echo     echo OptiScaler removed^^^^! Ignore the warnings about missing files.
 echo     echo.
@@ -498,9 +504,9 @@ echo ^)
 
 echo.
 echo pause
-echo if "%%removeChoice%%"=="1" ^(
-echo     del "%%~nx0"
-echo ^)
+echo if not "%%removeChoice%%"=="1" exit /b 0
+echo REM Leave the batch context before deleting the script so CMD does not resume a missing file.
+echo ^(goto^) 2^>nul ^& del /F /Q "%%UNINSTALLER_PATH%%"
 ) > "Remove_OptiScaler.bat"
 
 endlocal

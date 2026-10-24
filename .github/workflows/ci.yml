@@ -16,8 +16,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  linux-removal:
+    name: Linux removal checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: Test generated Linux remover and setup
+        run: python3 tests/test_uninstall.py
+
   build:
     name: Release x64
+    needs: linux-removal
     runs-on: windows-2022
     timeout-minutes: 45
     outputs:
@@ -42,6 +52,11 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: ./scripts/build.ps1 -ReleaseTag $env:RELEASE_TAG
+
+      - name: Test generated Windows remover
+        env:
+          OPTISCALER_TEST_DLL: ${{ github.workspace }}/x64/Release/a/OptiScaler.dll
+        run: python tests/test_uninstall.py
 
       - name: Upload directly usable ZIP
         id: package
