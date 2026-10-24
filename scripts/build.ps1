@@ -42,7 +42,13 @@ try {
     Copy-Item "profiles/BC250.ini" "$packageRoot/profiles/BC250.ini" -Force
     Copy-Item "docs/BC250.md" "$packageRoot/docs/BC250.md" -Force
     Copy-Item "external/fsr4/README.md" "$packageRoot/docs/FSR4-providers.md" -Force
-    Copy-Item LICENSE $packageRoot -Force
+    Copy-Item LICENSE "$packageRoot/Licenses/OptiScaler_LICENSE.txt" -Force
+    # Older builds placed GPL text at the package root; avoid carrying it into a rebuild.
+    $legacyLicense = Join-Path $packageRoot "LICENSE"
+    if ((Test-Path -LiteralPath $legacyLicense) -and
+        (Get-FileHash -LiteralPath $legacyLicense).Hash -eq (Get-FileHash LICENSE).Hash) {
+        Remove-Item -LiteralPath $legacyLicense -Force
+    }
 
     $versionHeader = Get-Content "OptiScaler/resource.h" -Raw
     $versionParts = foreach ($key in @("VER_MAJOR_VERSION", "VER_MINOR_VERSION", "VER_HOTFIX_VERSION", "VER_BUILD_NUMBER")) {
