@@ -22,6 +22,7 @@
 #include <misc/IdentifyGpu.h>
 
 #include "Hook_Utils.h"
+#include <fsr4/FSR4Dx12PipelineCache.h>
 
 #include <algorithm>
 #include <array>
@@ -57,6 +58,8 @@ static PFN_CreatePlacedResource o_CreatePlacedResource = nullptr;
 static PFN_SetResidencyPriority o_SetResidencyPriority = nullptr;
 static PFN_GetResourceAllocationInfo o_GetResourceAllocationInfo = nullptr;
 static PFN_CreateRootSignature o_CreateRootSignature = nullptr;
+static FSR4Dx12PipelineCache::ComputeCreate o_CreateComputePipelineState = nullptr;
+static FSR4Dx12PipelineCache::StreamCreate o_CreatePipelineState = nullptr;
 static PFN_D3D12GetInterface o_D3D12GetInterface = nullptr;
 static PFN_CreateDevice o_CreateDevice = nullptr;
 
@@ -2036,6 +2039,29 @@ static void hkCreateSampler(ID3D12Device* device, const D3D12_SAMPLER_DESC* pDes
     return o_CreateSampler(device, &newDesc, DestDescriptor);
 }
 
+static HRESULT STDMETHODCALLTYPE hkCreateComputePipelineState(ID3D12Device* device,
+                                                              const D3D12_COMPUTE_PIPELINE_STATE_DESC* desc, REFIID iid,
+                                                              void** output)
+{
+    return FSR4Dx12PipelineCache::CreateCompute(o_CreateComputePipelineState, device, desc, iid, output);
+}
+
+static HRESULT STDMETHODCALLTYPE hkCreatePipelineState(ID3D12Device2* device,
+                                                       const D3D12_PIPELINE_STATE_STREAM_DESC* desc, REFIID iid,
+                                                       void** output)
+{
+    return FSR4Dx12PipelineCache::CreateStream(o_CreatePipelineState, device, desc, iid, output);
+}
+
+static HRESULT CreateAndRememberRootSignature(ID3D12Device* device, UINT nodeMask, const void* bytes, SIZE_T size,
+                                              REFIID iid, void** output)
+{
+    const auto result = o_CreateRootSignature(device, nodeMask, bytes, size, iid, output);
+    if (SUCCEEDED(result))
+        FSR4Dx12PipelineCache::RememberRootSignature(device, nodeMask, bytes, size, iid, output);
+    return result;
+}
+
 VALIDATE_HOOK(hkCreateRootSignature, PFN_CreateRootSignature)
 static HRESULT hkCreateRootSignature(ID3D12Device* device, UINT nodeMask, const void* pBlobWithRootSignature,
                                      SIZE_T blobLengthInBytes, REFIID riid, void** ppvRootSignature)
@@ -2050,8 +2076,8 @@ static HRESULT hkCreateRootSignature(ID3D12Device* device, UINT nodeMask, const 
 
     if (!samplerOverride && !extendedStateRestore && !trackHudfixRootSignature)
     {
-        return o_CreateRootSignature(device, nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid,
-                                     ppvRootSignature);
+        return CreateAndRememberRootSignature(device, nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid,
+                                              ppvRootSignature);
     }
 
     ID3D12VersionedRootSignatureDeserializer* deserializer = nullptr;
@@ -2062,8 +2088,8 @@ static HRESULT hkCreateRootSignature(ID3D12Device* device, UINT nodeMask, const 
     if (FAILED(result))
     {
         LOG_ERROR("Failed to create deserializer, error: {:X}", (UINT) result);
-        return o_CreateRootSignature(device, nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid,
-                                     ppvRootSignature);
+        return CreateAndRememberRootSignature(device, nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid,
+                                              ppvRootSignature);
     }
 
     const D3D12_VERSIONED_ROOT_SIGNATURE_DESC* desc = deserializer->GetUnconvertedRootSignatureDesc();
@@ -2071,8 +2097,8 @@ static HRESULT hkCreateRootSignature(ID3D12Device* device, UINT nodeMask, const 
     // No sampler override is needed; create the original signature and only record requested metadata.
     if (!samplerOverride)
     {
-        auto result =
-            o_CreateRootSignature(device, nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid, ppvRootSignature);
+        auto result = CreateAndRememberRootSignature(device, nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid,
+                                                     ppvRootSignature);
 
         if (SUCCEEDED(result) && ppvRootSignature != nullptr && *ppvRootSignature != nullptr)
         {
@@ -2141,8 +2167,8 @@ static HRESULT hkCreateRootSignature(ID3D12Device* device, UINT nodeMask, const 
 
     if (SUCCEEDED(result))
     {
-        result = o_CreateRootSignature(device, nodeMask, newBlob->GetBufferPointer(), newBlob->GetBufferSize(), riid,
-                                       ppvRootSignature);
+        result = CreateAndRememberRootSignature(device, nodeMask, newBlob->GetBufferPointer(), newBlob->GetBufferSize(),
+                                                riid, ppvRootSignature);
         newBlob->Release();
 
         if (errorBlob)
@@ -2159,8 +2185,8 @@ static HRESULT hkCreateRootSignature(ID3D12Device* device, UINT nodeMask, const 
         }
 
         // Fallback to original blob
-        result =
-            o_CreateRootSignature(device, nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid, ppvRootSignature);
+        result = CreateAndRememberRootSignature(device, nodeMask, pBlobWithRootSignature, blobLengthInBytes, riid,
+                                                ppvRootSignature);
     }
 
     if (SUCCEEDED(result) && ppvRootSignature != nullptr && *ppvRootSignature != nullptr)
@@ -2227,6 +2253,15 @@ static void HookToDevice(ID3D12Device* InDevice)
     o_CreateSampler = (PFN_CreateSampler) pVTable[22];
     o_CheckFeatureSupport = (PFN_CheckFeatureSupport) pVTable[13];
     o_CreateRootSignature = (PFN_CreateRootSignature) pVTable[16];
+    o_CreateComputePipelineState = reinterpret_cast<FSR4Dx12PipelineCache::ComputeCreate>(pVTable[11]);
+
+    ID3D12Device2* device2 = nullptr;
+    if (SUCCEEDED((realDevice ? realDevice : InDevice)->QueryInterface(IID_PPV_ARGS(&device2))))
+    {
+        o_CreatePipelineState =
+            reinterpret_cast<FSR4Dx12PipelineCache::StreamCreate>((*reinterpret_cast<void***>(device2))[47]);
+        device2->Release();
+    }
     o_GetResourceAllocationInfo = (PFN_GetResourceAllocationInfo) pVTable[25];
     o_CreateCommittedResource = (PFN_CreateCommittedResource) pVTable[27];
     o_CreatePlacedResource = (PFN_CreatePlacedResource) pVTable[29];
@@ -2255,6 +2290,11 @@ static void HookToDevice(ID3D12Device* InDevice)
 
         if (o_CreateRootSignature != nullptr)
             DetourAttach(&(PVOID&) o_CreateRootSignature, hkCreateRootSignature);
+
+        if (o_CreateComputePipelineState != nullptr)
+            DetourAttach(&(PVOID&) o_CreateComputePipelineState, hkCreateComputePipelineState);
+        if (o_CreatePipelineState != nullptr)
+            DetourAttach(&(PVOID&) o_CreatePipelineState, hkCreatePipelineState);
 
         // Will be used for tracking current d3d12 device too
         if (o_D3D12DeviceRelease != nullptr)
@@ -2288,6 +2328,8 @@ static void HookToDevice(ID3D12Device* InDevice)
             o_CreateSampler = nullptr;
             o_CheckFeatureSupport = nullptr;
             o_CreateRootSignature = nullptr;
+            o_CreateComputePipelineState = nullptr;
+            o_CreatePipelineState = nullptr;
             o_CreateCommittedResource = nullptr;
             o_CreatePlacedResource = nullptr;
             o_D3D12DeviceRelease = nullptr;
@@ -2318,6 +2360,11 @@ static void UnhookDevice()
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
 
+    if (o_CreateComputePipelineState != nullptr)
+        DetourDetach(&(PVOID&) o_CreateComputePipelineState, hkCreateComputePipelineState);
+    if (o_CreatePipelineState != nullptr)
+        DetourDetach(&(PVOID&) o_CreatePipelineState, hkCreatePipelineState);
+
     if (o_CreateSampler != nullptr)
         DetourDetach(&(PVOID&) o_CreateSampler, hkCreateSampler);
 
@@ -2347,6 +2394,8 @@ static void UnhookDevice()
     else
     {
         o_CreateSampler = nullptr;
+        o_CreateComputePipelineState = nullptr;
+        o_CreatePipelineState = nullptr;
         o_CheckFeatureSupport = nullptr;
         o_CreateCommittedResource = nullptr;
         o_CreatePlacedResource = nullptr;
@@ -2407,6 +2456,11 @@ void D3D12Hooks::Unhook()
     DetourTransactionBegin();
     DetourUpdateThread(GetCurrentThread());
 
+    if (o_CreateComputePipelineState != nullptr)
+        DetourDetach(&(PVOID&) o_CreateComputePipelineState, hkCreateComputePipelineState);
+    if (o_CreatePipelineState != nullptr)
+        DetourDetach(&(PVOID&) o_CreatePipelineState, hkCreatePipelineState);
+
     if (o_CreateSampler != nullptr)
         DetourDetach(&(PVOID&) o_CreateSampler, hkCreateSampler);
 
@@ -2433,6 +2487,8 @@ void D3D12Hooks::Unhook()
     else
     {
         o_CreateSampler = nullptr;
+        o_CreateComputePipelineState = nullptr;
+        o_CreatePipelineState = nullptr;
         o_CheckFeatureSupport = nullptr;
         o_CreateCommittedResource = nullptr;
         o_CreatePlacedResource = nullptr;

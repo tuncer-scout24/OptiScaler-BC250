@@ -17,6 +17,8 @@ OWNED_FILES = (
     "OptiScaler.ini", "OptiScaler.log", "OptiScaler.dll", "OptiScaler.asi",
     "OptiScaler/amdvkffx64.dll", "OptiScaler/amdxcffx64.dll",
     "OptiScaler/Licenses/FidelityFX_v1_LICENSE.md",
+    "OptiScaler/BC250Dx12/cache/test.pso", "OptiScaler/BC250Dx12/capture/test.dxil",
+    "OptiScaler/tools/BC250-DX12.md",
     "OptiScaler/D3D12_OptiScaler/D3D12Core.dll", "OptiScaler/plugins/test.asi",
     "D3D12_OptiScaler/legacy.dll", "DlssOverrides/legacy.json",
     "docs/BC250.md", "docs/FSR4-providers.md", "profiles/BC250.ini",

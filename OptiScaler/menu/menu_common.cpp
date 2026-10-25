@@ -14,6 +14,7 @@
 #include <fsr4/FSR4Models.h>
 #include <fsr4/FSR4Presets.h>
 #include <fsr4/FSR4DriverProviderVk.h>
+#include <fsr4/FSR4Dx12PipelineCache.h>
 #include <proxies/Streamline_Proxy.h>
 
 #include <framegen/nvngx/Nvngx_FG.h>
@@ -3724,6 +3725,49 @@ void MenuCommon::RenderActiveUpscalerSettings(RenderMenuContext& ctx)
             ImGui::PopItemWidth();
 
             ShowTooltip("List of upscalers reported by FFX SDK");
+        }
+
+        // Keep these controls independent of model discovery: a single-model DLL must not hide them.
+        if (primaryGpu.vendorId == VendorId::AMD && primaryGpu.deviceId == 0x13fe)
+        {
+            const auto versions = GetFfxVersionList(currentBackend, state.api);
+            const auto index = config->FfxUpscalerIndex.value_or_default();
+            const bool driverSelected = versions == &state.ffxUpscalerVersionsDx12 && index >= 0 &&
+                                        index < versions->ids.size() &&
+                                        versions->ids[index] == FSR4DriverProviderDx12::VersionId();
+            ImGui::Spacing();
+            ImGui::TextUnformatted("BC250 DX12 tools");
+            ImGui::BeginDisabled(!driverSelected);
+            bool cache = config->Fsr4Dx12PipelineCache.value_or_default();
+            bool capture = config->Fsr4Dx12ShaderCapture.value_or_default();
+            const bool cacheChanged = ImGui::Checkbox("Cache DX12 FSR pipelines", &cache);
+            ShowTooltip("Reuses compiled compute-pipeline blobs for the AMD DX12 provider.\n"
+                        "Targets compilation and startup costs; does not reduce per-frame inference work.");
+            const bool captureChanged = ImGui::Checkbox("Capture DX12 FSR shaders", &capture);
+            ShowTooltip("Dumps unchanged DXIL and root signatures for shader investigation.\n"
+                        "Disable for timing runs. No replacement shaders are applied.");
+            if (cacheChanged || captureChanged)
+            {
+                config->Fsr4Dx12PipelineCache = cache;
+                config->Fsr4Dx12ShaderCapture = capture;
+                state.newBackend = currentBackend;
+                MARK_ALL_BACKENDS_CHANGED();
+            }
+            ImGui::EndDisabled();
+            if (!driverSelected)
+                ImGui::TextDisabled("Select the AMD DX12 driver FSR provider to use these tools.");
+            else
+            {
+                const auto stats = FSR4Dx12PipelineCache::Statistics();
+                ImGui::TextDisabled(
+                    "Session PSOs: %llu compiled, %llu cached accepted, %llu rejected, %llu skipped",
+                    static_cast<unsigned long long>(stats.compiled), static_cast<unsigned long long>(stats.accepted),
+                    static_cast<unsigned long long>(stats.rejected), static_cast<unsigned long long>(stats.skipped));
+                if (stats.calls == 0)
+                    ImGui::TextDisabled("No synchronous provider pipeline creations observed yet.");
+                if (stats.unavailable)
+                    ImGui::TextDisabled("Some pipeline blobs could not be retrieved or saved; see the log.");
+            }
         }
 
         auto majorFsrVersion = currentFeature->Version().major;

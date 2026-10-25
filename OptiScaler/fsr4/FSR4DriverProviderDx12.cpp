@@ -2,6 +2,7 @@
 #include "FSR4DriverProviderDx12.h"
 
 #include "FSR4Models.h"
+#include "FSR4Dx12PipelineCache.h"
 
 #include <misc/IdentifyGpu.h>
 #include <proxies/FfxApi_Proxy.h>
@@ -19,7 +20,7 @@ DriverProvider upscaler {};
 bool upscalerAvailable = false;
 std::once_flag initOnce;
 
-std::unordered_set<ffxContext> contexts;
+std::unordered_map<ffxContext, FSR4Dx12PipelineCache::DevicePtr> contexts;
 std::mutex contextsMutex;
 
 // FFX packs provider versions into the low bits of their ids, external providers also set bit 31
@@ -140,13 +141,36 @@ ffxReturnCode_t FSR4DriverProviderDx12::CreateContext(ffxContext* context, ffxCr
     if (!Init())
         return FFX_API_RETURN_NO_PROVIDER;
 
+    ID3D12Device* device = nullptr;
+    // The upscaler create descriptor chains the SDK DX12 backend descriptor.
+    // Bound the walk and preserve unknown descriptors unchanged.
+    auto next = desc ? desc->pNext : nullptr;
+    for (unsigned i = 0; next && i < 32; ++i, next = next->pNext)
+    {
+        if (next->type == FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_DX12)
+        {
+            device = static_cast<ID3D12Device*>(reinterpret_cast<const ffxCreateBackendDX12Desc*>(next)->device);
+            break;
+        }
+    }
+    const auto cacheDevice = FSR4Dx12PipelineCache::Prepare(device);
+    FSR4Dx12PipelineCache::Scope cacheScope(cacheDevice);
     auto result = upscaler.functions.createContext(context, desc, memCb);
     LOG_INFO("Created driver upscaler context, result: {}", FfxApiProxy::ReturnCodeToString(result));
 
     if (result == FFX_API_RETURN_OK)
     {
         std::scoped_lock lock(contextsMutex);
-        contexts.insert(*context);
+        contexts.emplace(*context, cacheDevice);
+    }
+
+    if (cacheDevice)
+    {
+        const auto model = FSR4Models::ActiveModel(LoadedModule());
+        LOG_INFO("BC250 DX12 provider amdxcffx64.dll, reported model: {}",
+                 model ? FSR4Models::Name(*model) : "Unknown (support checks did not identify a model)");
+        if (cacheScope.counters.calls == 0)
+            LOG_INFO("BC250 DX12: no synchronous pipeline creations observed during context creation");
     }
 
     return result;
@@ -181,6 +205,14 @@ ffxReturnCode_t FSR4DriverProviderDx12::Query(ffxContext* context, ffxQueryDescH
 
 ffxReturnCode_t FSR4DriverProviderDx12::Dispatch(ffxContext* context, const ffxDispatchDescHeader* desc)
 {
+    FSR4Dx12PipelineCache::DevicePtr cacheDevice;
+    {
+        std::scoped_lock lock(contextsMutex);
+        if (context && *context)
+            if (auto entry = contexts.find(*context); entry != contexts.end())
+                cacheDevice = entry->second;
+    }
+    FSR4Dx12PipelineCache::Scope cacheScope(cacheDevice);
     return upscaler.functions.dispatch(context, desc);
 }
 

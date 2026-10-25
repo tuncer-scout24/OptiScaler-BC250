@@ -41,6 +41,15 @@ try {
     New-Item -ItemType Directory -Force -Path "$packageRoot/profiles", "$packageRoot/docs" | Out-Null
     Copy-Item "profiles/BC250.ini" "$packageRoot/profiles/BC250.ini" -Force
     Copy-Item "docs/BC250.md" "$packageRoot/docs/BC250.md" -Force
+    New-Item -ItemType Directory -Force -Path "$packageRoot/OptiScaler/tools" | Out-Null
+    Copy-Item "docs/BC250-DX12.md" "$packageRoot/OptiScaler/tools/BC250-DX12.md" -Force
+    # Omit obsolete Vulkan experiments when packaging over an earlier local build.
+    foreach ($obsolete in @("bc250_shaders.py", "BC250-shader-tools.md")) {
+        $obsoletePath = Join-Path "$packageRoot/OptiScaler/tools" $obsolete
+        if (Test-Path -LiteralPath $obsoletePath) {
+            Remove-Item -LiteralPath $obsoletePath -Force
+        }
+    }
     Copy-Item "external/fsr4/README.md" "$packageRoot/docs/FSR4-providers.md" -Force
     Copy-Item LICENSE "$packageRoot/Licenses/OptiScaler_LICENSE.txt" -Force
     # Older builds placed GPL text at the package root; avoid carrying it into a rebuild.

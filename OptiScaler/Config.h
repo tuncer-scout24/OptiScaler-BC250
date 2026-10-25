@@ -547,6 +547,8 @@ class Config
     CustomOptional<FSR4Support> Fsr4GpuSupport { FSR4Support::None };
     CustomOptional<uint32_t, NoDefault> Fsr4Preset;
     CustomOptional<FSR4Model, NoDefault> Fsr4Model;
+    CustomOptional<bool, SoftDefault> Fsr4Dx12PipelineCache { true };
+    CustomOptional<bool, SoftDefault> Fsr4Dx12ShaderCapture { false };
     CustomOptional<bool> Fsr4EnableWatermark { false };
     CustomOptional<bool, SoftDefault> Fsr4DoNotLoadAmdxc64 { false };
 

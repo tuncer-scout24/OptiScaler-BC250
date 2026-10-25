@@ -222,6 +222,9 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClInclude Include="framegen\IFGFeature_Vk.h" />
     <ClInclude Include="framegen\nvngx\Nvngx_FG.h" />
     <ClInclude Include="fsr4\FSR4DriverProviderDx12.h" />
+    <ClInclude Include="fsr4\FSR4Dx12PipelineCache.h" />
+    <ClInclude Include="fsr4\Dx12PipelineCacheData.h" />
+    <ClInclude Include="fsr4\Dx12ComputePipeline.h" />
     <ClInclude Include="fsr4\FSR4Models.h" />
     <ClInclude Include="fsr4\FSR4Presets.h" />
     <ClInclude Include="fsr4\FSR4PipelineLayouts.h" />
@@ -579,6 +582,7 @@ copy NUL "$(SolutionDir)x64\Release\a\!! EXTRACT ALL FILES TO GAME FOLDER !!" /Y
     <ClCompile Include="framegen\IFGFeature_Vk.cpp" />
     <ClCompile Include="framegen\nvngx\Nvngx_FG.cpp" />
     <ClCompile Include="fsr4\FSR4DriverProviderDx12.cpp" />
+    <ClCompile Include="fsr4\FSR4Dx12PipelineCache.cpp" />
     <ClCompile Include="fsr4\FSR4Models.cpp" />
     <ClCompile Include="fsr4\FSR4Presets.cpp" />
     <ClCompile Include="fsr4\FSR4PipelineLayouts.cpp" />
