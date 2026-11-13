@@ -11,6 +11,9 @@
 
 static CSimpleIniA ini;
 
+// Plugins can read and write the ini from their own threads
+static std::recursive_mutex iniMutex;
+
 static inline int64_t GetTicks()
 {
     LARGE_INTEGER ticks;
@@ -47,6 +50,8 @@ Config::Config()
 
 bool Config::Reload(std::filesystem::path iniPath)
 {
+    std::lock_guard<std::recursive_mutex> lock(iniMutex);
+
     auto pathWStr = iniPath.wstring();
 
     LOG_INFO("Trying to load ini from: {0}", wstring_to_string(pathWStr));
@@ -57,11 +62,34 @@ bool Config::Reload(std::filesystem::path iniPath)
 
         // Upscalers
         {
-            // transform converts only when optional has a value
-            Dx11Upscaler.set_from_config(readString("Upscalers", "Dx11Upscaler", true).transform(CodeToUpscaler));
-            Dx12Upscaler.set_from_config(readString("Upscalers", "Dx12Upscaler", true).transform(CodeToUpscalerFfx));
-            VulkanUpscaler.set_from_config(
-                readString("Upscalers", "VulkanUpscaler", true).transform(CodeToUpscalerFfx));
+            // Any value other than an upscaler is the name of a custom upscaler, the upscaler it runs as is set by
+            // CustomProviders::ResolveUpscaler once the Opti folder is known
+            auto readUpscaler = [&](const char* key, auto codeToUpscaler, auto& upscaler, auto& custom)
+            {
+                // transform converts only when optional has a value
+                auto value = readString("Upscalers", key, true).transform(codeToUpscaler);
+
+                if (value == Upscaler::Reset)
+                    custom.set_from_config(std::string(ini.GetValue("Upscalers", key)));
+                else
+                    upscaler.set_from_config(value);
+            };
+
+            readUpscaler("Dx11Upscaler", CodeToUpscaler, Dx11Upscaler, CustomUpscalerDx11);
+            readUpscaler("Dx12Upscaler", CodeToUpscalerFfx, Dx12Upscaler, CustomUpscaler);
+            readUpscaler("VulkanUpscaler", CodeToUpscalerFfx, VulkanUpscaler, CustomUpscalerVk);
+
+            // A regular upscaler or a custom name for ray reconstruction, dlssd is the same as auto, custom names
+            // are checked by CustomProviders::ResolveAll
+            if (auto rrUpscaler = readString("Upscalers", "RRUpscaler", true); rrUpscaler.value_or("dlssd") != "dlssd")
+            {
+                if (auto upscaler = CodeToUpscalerFfx(rrUpscaler.value()); IsRRRegularUpscaler(upscaler))
+                    RRRegularUpscaler.set_from_config(upscaler);
+                else
+                    CustomRRUpscaler.set_from_config(std::string(ini.GetValue("Upscalers", "RRUpscaler")));
+            }
+
+            RRAllowRegularUpscalers.set_from_config(readBool("Upscalers", "RRAllowRegularUpscalers"));
         }
 
         // Frame Generation
@@ -72,8 +100,9 @@ bool Config::Reload(std::filesystem::path iniPath)
             FGInput.set_from_config(readString("FrameGen", "FGInput").transform(CodeToEnum<enum FGInput>));
             FGOutput.set_from_config(readString("FrameGen", "FGOutput").transform(CodeToEnum<enum FGOutput>));
 
-            const bool canUseNvngxReplacement =
-                FGInput.value_or_default() == FGInput::NvngxFG || FGOutput.value_or_default() == FGOutput::DLSSG;
+            const bool canUseNvngxReplacement = FGInput.value_or_default() == FGInput::NvngxFG ||
+                                                FGOutput.value_or_default() == FGOutput::DLSSG ||
+                                                FGOutput.value_or_default() == FGOutput::FlipMeter;
 
             if (auto FGNvngxReplacementString = readString("FrameGen", "FGNvngxReplacement");
                 canUseNvngxReplacement && FGNvngxReplacementString.has_value())
@@ -88,6 +117,11 @@ bool Config::Reload(std::filesystem::path iniPath)
                     FGNvngxReplacement.set_from_config(FGNvngxReplacement::FFX);
                 else if (lstrcmpiA(FGNvngxReplacementString.value().c_str(), "combo") == 0)
                     FGNvngxReplacement.set_from_config(FGNvngxReplacement::Combo);
+                else
+                {
+                    FGNvngxReplacement.set_from_config(FGNvngxReplacement::Custom);
+                    State::Instance().fgNvngxCustom = FGNvngxReplacementString.value();
+                }
             }
 
             if (auto forceXell = readBool("fakenvapi", "ForceXeLL"); forceXell.has_value() && forceXell.value())
@@ -143,6 +177,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             FGFPTAllowWaitForSingleObjectOnFence.set_from_config(readBool("FSRFG", "FPTWaitForSingleObjectOnFence"));
             FSRFGEnableWatermark.set_from_config(readBool("FSRFG", "EnableWatermark"));
             FSRFGDisableFlipMetering.set_from_config(readBool("FSRFG", "DisableFlipMetering"));
+            FSRFGProvider.set_from_config(readString("FSRFG", "Provider"));
         }
 
         // OptiFG
@@ -178,6 +213,7 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             FGResourceFlip.set_from_config(readBool("OptiFG", "ResourceFlip"));
             FGResourceFlipOffset.set_from_config(readBool("OptiFG", "ResourceFlipOffset"));
+            FGHudlessFlip.set_from_config(readBool("OptiFG", "HudlessFlip"));
 
             FGAlwaysCaptureFSRFGSwapchain.set_from_config(readBool("OptiFG", "AlwaysCaptureFSRFGSwapchain"));
         }
@@ -211,6 +247,13 @@ bool Config::Reload(std::filesystem::path iniPath)
             FGXeFGHighResMV.set_from_config(readBool("XeFG", "HighResMV"));
             FGXeFGDebugView.set_from_config(readBool("XeFG", "DebugView"));
             FGXeFGForceBorderless.set_from_config(readBool("XeFG", "ForceBorderless"));
+        }
+
+        {
+            FGFlipMeterInterpolationCount.set_from_config(readInt("FlipMeter", "InterpolationCount"));
+            if (FGFlipMeterInterpolationCount.has_value() &&
+                (FGFlipMeterInterpolationCount.value() < 1 || FGFlipMeterInterpolationCount.value() > 5))
+                FGFlipMeterInterpolationCount.reset();
         }
 
         {
@@ -273,6 +316,16 @@ bool Config::Reload(std::filesystem::path iniPath)
             FsrMinDisOccAcc.set_from_config(readFloat("FSR", "MinDisOccAcc"));
             FsrDebugView.set_from_config(readBool("FSR", "DebugView"));
             FfxUpscalerIndex.set_from_config(readInt("FSR", "UpscalerIndex"));
+
+            // Custom upscalers have a section named after their folder
+            CSimpleIniA::TNamesDepend sections;
+            ini.GetAllSections(sections);
+
+            for (auto& section : sections)
+            {
+                if (_stricmp(section.pItem, "FSR") != 0 && ini.GetValue(section.pItem, "UpscalerIndex") != nullptr)
+                    FfxUpscalerIndexFor(section.pItem).set_from_config(readInt(section.pItem, "UpscalerIndex"));
+            }
             FfxFGIndex.set_from_config(readInt("FSR", "FGIndex"));
             FsrUseMaskForTransparency.set_from_config(readBool("FSR", "UseReactiveMaskForTransparency"));
             DlssReactiveMaskBias.set_from_config(readFloat("FSR", "DlssReactiveMaskBias"));
@@ -301,7 +354,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             else if (FsrNonLinearSRGB.has_value() && FsrNonLinearSRGB.value())
                 FsrNonLinearPQ.reset();
 
-            if (FsrNonLinearPQ.has_value() || FsrNonLinearSRGB.has_value())
+            if (FsrNonLinearPQ.value_or_default() || FsrNonLinearSRGB.value_or_default())
                 FsrNonLinearColorSpace.set_volatile_value(true);
         }
 
@@ -410,6 +463,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             LogSingleFile.set_from_config(readBool("Log", "SingleFile"));
             LogAsync.set_from_config(readBool("Log", "LogAsync"));
             LogAsyncThreads.set_from_config(readInt("Log", "LogAsyncThreads"));
+            CreateDumps.set_from_config(readBool("Log", "CreateDumps"));
 
             {
                 auto setting = readString("Log", "LogFileName", false);
@@ -521,7 +575,7 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             ContrastEnabled.set_from_config(readBool("CAS", "ContrastEnabled"));
             if (auto setting = readFloat("CAS", "Contrast"); setting.has_value())
-                Contrast.set_from_config(std::clamp(setting.value(), -2.0f, 2.0f));
+                Contrast.set_from_config(std::clamp(setting.value(), 0.0f, 2.0f));
 
             DADepthScale.set_from_config(readFloat("CAS", "DADepthScale"));
             DADepthBias.set_from_config(readFloat("CAS", "DADepthBias"));
@@ -612,8 +666,8 @@ bool Config::Reload(std::filesystem::path iniPath)
                 AnisotropyOverride.reset();
 
             AnisotropySkipPointFilter.set_from_config(readBool("Anisotropy", "SkipPointFilter"));
-            AnisotropyModifyComp.set_from_config(readBool("Anisotropy", "AFModifyComparison"));
-            AnisotropyModifyMinMax.set_from_config(readBool("Anisotropy", "AFModifyMinMax"));
+            AnisotropyModifyComp.set_from_config(readBool("Anisotropy", "ModifyComparison"));
+            AnisotropyModifyMinMax.set_from_config(readBool("Anisotropy", "ModifyMinMax"));
         }
 
         // Mipmap
@@ -646,7 +700,8 @@ bool Config::Reload(std::filesystem::path iniPath)
 
             SimulateWaitableObject.set_from_config(readBool("Hotfix", "SimulateWaitableObject"));
 
-            RoundInternalResolution.set_from_config(readInt("Hotfix", "RoundInternalResolution"));
+            if (auto setting = readInt("Hotfix", "RoundInternalResolution"); setting.has_value() && setting > 0)
+                RoundInternalResolution.set_from_config(setting);
 
             RestoreComputeSignature.set_from_config(readBool("Hotfix", "RestoreComputeSignature"));
             RestoreGraphicSignature.set_from_config(readBool("Hotfix", "RestoreGraphicSignature"));
@@ -666,7 +721,7 @@ bool Config::Reload(std::filesystem::path iniPath)
 
         // Dx11 with Dx12
         {
-            Dx11DelayedInit.set_from_config(readInt("Dx11withDx12", "UseDelayedInit"));
+            Dx11DelayedInit.set_from_config(readBool("Dx11withDx12", "UseDelayedInit"));
             DontUseNTShared.set_from_config(readBool("Dx11withDx12", "DontUseNTShared"));
         }
 
@@ -782,6 +837,7 @@ bool Config::Reload(std::filesystem::path iniPath)
             OverrideVsync.set_from_config(readBool("V-Sync", "OverrideVsync"));
             ForceVsync.set_from_config(readBool("V-Sync", "ForceVsync"));
             VsyncInterval.set_from_config(readInt("V-Sync", "SyncInterval"));
+            VulkanPresentMode.set_from_config(readInt("V-Sync", "VulkanPresentMode"));
         }
 
         // Libraries
@@ -799,11 +855,22 @@ bool Config::Reload(std::filesystem::path iniPath)
             FfxDx12RRPath.set_from_config(readWString("Libraries", "FfxDx12RRPath"));
             FfxDx12RCPath.set_from_config(readWString("Libraries", "FfxDx12RCPath"));
             FfxVkPath.set_from_config(readWString("Libraries", "FfxVkPath"));
+            FfxVkSRPath.set_from_config(readWString("Libraries", "FfxVkSRPath"));
+            FfxVkFGPath.set_from_config(readWString("Libraries", "FfxVkFGPath"));
 
             XeSSLibrary.set_from_config(readWString("Libraries", "XeSSPath"));
-            XeSSLibrary.set_from_config(readWString("Libraries", "XeFGPath"));
-            XeSSLibrary.set_from_config(readWString("Libraries", "XeLLPath"));
+            XeFGLibrary.set_from_config(readWString("Libraries", "XeFGPath"));
+            XeLLLibrary.set_from_config(readWString("Libraries", "XeLLPath"));
             XeSSDx11Library.set_from_config(readWString("Libraries", "XeSSDx11Path"));
+        }
+
+        // Relative paths are based on Opti's folder
+        for (auto path : { &MainDllPath, &NvngxPath, &NVNGX_DLSS_Library, &DLSSFeaturePath, &NvapiDllPath, &FfxDx12Path,
+                           &FfxDx12SRPath, &FfxDx12FGPath, &FfxDx12RRPath, &FfxDx12RCPath, &FfxVkPath, &FfxVkSRPath,
+                           &FfxVkFGPath, &XeSSLibrary, &XeFGLibrary, &XeLLLibrary, &XeSSDx11Library, &PluginPath })
+        {
+            if (path->has_value() && !path->value().empty() && std::filesystem::path(path->value()).is_relative())
+                path->set_volatile_value((Util::DllPath().parent_path() / path->value()).wstring());
         }
 
         // Reading old configs for compatibility reasons
@@ -828,6 +895,8 @@ bool Config::LoadFromPath(const wchar_t* InPath)
 {
     std::filesystem::path iniPath(InPath);
     auto newPath = iniPath / fileName;
+
+    std::lock_guard<std::recursive_mutex> lock(iniMutex);
 
     if (Reload(newPath))
     {
@@ -1177,6 +1246,8 @@ static std::optional<std::string> UnpackOverlayValues(std::string_view data)
 
 std::string Config::ExportOverlaySettings()
 {
+    std::lock_guard<std::recursive_mutex> lock(iniMutex);
+
     WriteOverlaySettings();
 
     std::string data;
@@ -1221,6 +1292,8 @@ bool Config::ImportOverlaySettings(std::string_view code)
 
 bool Config::ApplyOverlaySettings(std::string_view text)
 {
+    std::lock_guard<std::recursive_mutex> lock(iniMutex);
+
     // Known keys only, their values are checked as the ini's are
     std::vector<std::pair<const char*, std::string>> values;
     std::istringstream entries { std::string(text) };
@@ -1268,20 +1341,41 @@ bool Config::ApplyOverlaySettings(std::string_view text)
 
 bool Config::SaveIni()
 {
+    std::lock_guard<std::recursive_mutex> lock(iniMutex);
+
     // Upscalers
     {
-        auto SaveUpscaler = [&](const char* key, auto& upscalerSetting)
+        // A custom name is saved in place of the upscaler it runs as
+        auto SaveUpscaler = [&](const char* key, auto& upscalerSetting, auto& customSetting)
         {
-            std::string value = upscalerSetting.value_for_config()
+            auto upscaler = upscalerSetting.value_for_config();
+            auto custom = customSetting.value_or("");
+
+            if (!custom.empty() && (upscaler == Upscaler::FFX || upscaler == Upscaler::FFX_on12 ||
+                                    upscaler == Upscaler::DLSS || upscaler == Upscaler::DLSS_on12))
+            {
+                ini.SetValue("Upscalers", key, custom.c_str());
+                return;
+            }
+
+            std::string value = upscaler
                                     .transform(UpscalerToCode) // Turn enum into string
                                     .value_or("auto");
 
             ini.SetValue("Upscalers", key, value.c_str());
         };
 
-        SaveUpscaler("Dx11Upscaler", Instance()->Dx11Upscaler);
-        SaveUpscaler("Dx12Upscaler", Instance()->Dx12Upscaler);
-        SaveUpscaler("VulkanUpscaler", Instance()->VulkanUpscaler);
+        SaveUpscaler("Dx11Upscaler", Instance()->Dx11Upscaler, Instance()->CustomUpscalerDx11);
+        SaveUpscaler("Dx12Upscaler", Instance()->Dx12Upscaler, Instance()->CustomUpscaler);
+        SaveUpscaler("VulkanUpscaler", Instance()->VulkanUpscaler, Instance()->CustomUpscalerVk);
+
+        if (auto regular = Instance()->RRRegularUpscaler.value_for_config(); regular.has_value())
+            ini.SetValue("Upscalers", "RRUpscaler", UpscalerToCode(regular.value()).c_str());
+        else
+            ini.SetValue("Upscalers", "RRUpscaler", Instance()->CustomRRUpscaler.value_for_config_or("auto").c_str());
+
+        ini.SetValue("Upscalers", "RRAllowRegularUpscalers",
+                     GetBoolValue(Instance()->RRAllowRegularUpscalers.value_for_config()).c_str());
     }
 
     // Frame Generation
@@ -1311,6 +1405,8 @@ bool Config::SaveIni()
                 FGNvngxReplacementString = "FFX";
             else if (FGNvngxReplacementHeld.value() == FGNvngxReplacement::Combo)
                 FGNvngxReplacementString = "Combo";
+            else if (FGNvngxReplacementHeld.value() == FGNvngxReplacement::Custom)
+                FGNvngxReplacementString = State::Instance().fgNvngxCustom;
         }
         ini.SetValue("FrameGen", "FGNvngxReplacement", FGNvngxReplacementString.c_str());
 
@@ -1375,6 +1471,7 @@ bool Config::SaveIni()
                      GetBoolValue(Instance()->FSRFGEnableWatermark.value_for_config()).c_str());
         ini.SetValue("FSRFG", "DisableFlipMetering",
                      GetBoolValue(Instance()->FSRFGDisableFlipMetering.value_for_config()).c_str());
+        ini.SetValue("FSRFG", "Provider", Instance()->FSRFGProvider.value_for_config().value_or("auto").c_str());
     }
 
     // XeFG output
@@ -1400,6 +1497,11 @@ bool Config::SaveIni()
         ini.SetValue("XeFG", "DebugView", GetBoolValue(Instance()->FGXeFGDebugView.value_for_config()).c_str());
         ini.SetValue("XeFG", "ForceBorderless",
                      GetBoolValue(Instance()->FGXeFGForceBorderless.value_for_config()).c_str());
+    }
+
+    {
+        ini.SetValue("FlipMeter", "InterpolationCount",
+                     GetIntValue(Instance()->FGFlipMeterInterpolationCount.value_for_config()).c_str());
     }
 
     {
@@ -1490,6 +1592,7 @@ bool Config::SaveIni()
         ini.SetValue("OptiFG", "ResourceFlip", GetBoolValue(Instance()->FGResourceFlip.value_for_config()).c_str());
         ini.SetValue("OptiFG", "ResourceFlipOffset",
                      GetBoolValue(Instance()->FGResourceFlipOffset.value_for_config()).c_str());
+        ini.SetValue("OptiFG", "HudlessFlip", GetBoolValue(Instance()->FGHudlessFlip.value_for_config()).c_str());
 
         ini.SetValue("OptiFG", "AlwaysCaptureFSRFGSwapchain",
                      GetBoolValue(Instance()->FGAlwaysCaptureFSRFGSwapchain.value_for_config()).c_str());
@@ -1537,6 +1640,13 @@ bool Config::SaveIni()
         ini.SetValue("FSR", "MinDisOccAcc", GetFloatValue(Instance()->FsrMinDisOccAcc.value_for_config()).c_str());
         ini.SetValue("FSR", "DebugView", GetBoolValue(Instance()->FsrDebugView.value_for_config()).c_str());
         ini.SetValue("FSR", "UpscalerIndex", GetIntValue(Instance()->FfxUpscalerIndex.value_for_config()).c_str());
+
+        {
+            std::scoped_lock lock(Instance()->_customIndexMutex);
+
+            for (auto& [name, index] : Instance()->_ffxCustomUpscalerIndex)
+                ini.SetValue(name.c_str(), "UpscalerIndex", GetIntValue(index.value_for_config()).c_str());
+        }
         ini.SetValue("FSR", "FGIndex", GetIntValue(Instance()->FfxFGIndex.value_for_config()).c_str());
         ini.SetValue("FSR", "UseReactiveMaskForTransparency",
                      GetBoolValue(Instance()->FsrUseMaskForTransparency.value_for_config()).c_str());
@@ -1861,6 +1971,7 @@ bool Config::SaveIni()
                      wstring_to_string(Instance()->LogFileName.value_for_config_or(L"auto")).c_str());
         ini.SetValue("Log", "LogAsync", GetBoolValue(Instance()->LogAsync.value_for_config()).c_str());
         ini.SetValue("Log", "LogAsyncThreads", GetIntValue(Instance()->LogAsyncThreads.value_for_config()).c_str());
+        ini.SetValue("Log", "CreateDumps", GetBoolValue(Instance()->CreateDumps.value_for_config()).c_str());
     }
 
     // NvApi
@@ -1970,6 +2081,8 @@ bool Config::SaveIni()
         ini.SetValue("V-Sync", "OverrideVsync", GetBoolValue(Instance()->OverrideVsync.value_for_config()).c_str());
         ini.SetValue("V-Sync", "ForceVsync", GetBoolValue(Instance()->ForceVsync.value_for_config()).c_str());
         ini.SetValue("V-Sync", "SyncInterval", GetIntValue(Instance()->VsyncInterval.value_for_config()).c_str());
+        ini.SetValue("V-Sync", "VulkanPresentMode",
+                     GetIntValue(Instance()->VulkanPresentMode.value_for_config()).c_str());
 
         if (Instance()->VsyncInterval.has_value())
         {
@@ -2004,6 +2117,10 @@ bool Config::SaveIni()
                      wstring_to_string(Instance()->FfxDx12RCPath.value_for_config_or(L"auto")).c_str());
         ini.SetValue("Libraries", "FfxVkPath",
                      wstring_to_string(Instance()->FfxVkPath.value_for_config_or(L"auto")).c_str());
+        ini.SetValue("Libraries", "FfxVkSRPath",
+                     wstring_to_string(Instance()->FfxVkSRPath.value_for_config_or(L"auto")).c_str());
+        ini.SetValue("Libraries", "FfxVkFGPath",
+                     wstring_to_string(Instance()->FfxVkFGPath.value_for_config_or(L"auto")).c_str());
 
         ini.SetValue("Libraries", "XeSSPath",
                      wstring_to_string(Instance()->XeSSLibrary.value_for_config_or(L"auto")).c_str());
@@ -2031,12 +2148,46 @@ bool Config::SaveIni()
 
 bool Config::SaveXeFG()
 {
+    std::lock_guard<std::recursive_mutex> lock(iniMutex);
+
     ini.SetValue("XeFG", "DepthInverted", GetBoolValue(Instance()->FGXeFGDepthInverted.value_for_config()).c_str());
     ini.SetValue("XeFG", "JitteredMV", GetBoolValue(Instance()->FGXeFGJitteredMV.value_for_config()).c_str());
     ini.SetValue("XeFG", "HighResMV", GetBoolValue(Instance()->FGXeFGHighResMV.value_for_config()).c_str());
 
     auto pathWStr = absoluteFileName.wstring();
     LOG_INFO("Trying to save ini to: {0}", wstring_to_string(pathWStr));
+
+    return ini.SaveFile(absoluteFileName.wstring().c_str()) >= 0;
+}
+
+std::optional<std::string> Config::GetRawValue(const char* section, const char* key)
+{
+    std::lock_guard<std::recursive_mutex> lock(iniMutex);
+
+    const char* value = ini.GetValue(section, key, nullptr);
+    if (value == nullptr)
+        return std::nullopt;
+
+    return std::string(value);
+}
+
+void Config::SetRawValue(const char* section, const char* key, const char* value)
+{
+    std::lock_guard<std::recursive_mutex> lock(iniMutex);
+    ini.SetValue(section, key, value);
+}
+
+void Config::DeleteRawValue(const char* section, const char* key)
+{
+    std::lock_guard<std::recursive_mutex> lock(iniMutex);
+    ini.Delete(section, key, true);
+}
+
+bool Config::SaveRawValues()
+{
+    std::lock_guard<std::recursive_mutex> lock(iniMutex);
+
+    LOG_INFO("Trying to save ini to: {0}", wstring_to_string(absoluteFileName.wstring()));
 
     return ini.SaveFile(absoluteFileName.wstring().c_str()) >= 0;
 }

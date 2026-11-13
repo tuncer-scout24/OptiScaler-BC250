@@ -10,6 +10,64 @@
 
 #pragma endregion
 
+// The hooked amdxc64 is the first one loaded, with two GPUs of a vendor it can belong to the other driver package.
+// A device only works with the extension of its own driver, which is loaded by d3d12 from its driver package
+static PFN_AmdExtD3DCreateInterface CreateInterfaceOf(IUnknown* pOuter)
+{
+    ID3D12Device* device = nullptr;
+    if (pOuter == nullptr || FAILED(pOuter->QueryInterface(IID_PPV_ARGS(&device))))
+        return Amdxc64Hooks::o_AmdExtD3DCreateInterface;
+
+    auto luid = device->GetAdapterLuid();
+    device->Release();
+
+    std::filesystem::path store;
+    for (const auto& gpu : IdentifyGpu::getAllGpus())
+    {
+        if (IsEqualLUID(gpu.luid, luid))
+            store = gpu.driverStore;
+    }
+
+    if (store.empty())
+        return Amdxc64Hooks::o_AmdExtD3DCreateInterface;
+
+    auto module = KernelBaseProxy::GetModuleHandleW_()((store / L"amdxc64.dll").c_str());
+
+    // The export of the hooked module would call the hook again
+    if (module == nullptr || module == Amdxc64Hooks::moduleAmdxc64)
+        return Amdxc64Hooks::o_AmdExtD3DCreateInterface;
+
+    auto createInterface = reinterpret_cast<PFN_AmdExtD3DCreateInterface>(
+        KernelBaseProxy::GetProcAddress_()(module, "AmdExtD3DCreateInterface"));
+
+    if (createInterface == nullptr)
+        return Amdxc64Hooks::o_AmdExtD3DCreateInterface;
+
+    static std::once_flag logOnce;
+    std::call_once(logOnce, [&] { LOG_INFO(L"Using amdxc64 of the device's driver: {}", store.wstring()); });
+
+    return createInterface;
+}
+
+HRESULT Amdxc64Hooks::CreateFlipMeter(ID3D12Device* device, IUnknown* swapChain, IAmdExtFlipMeter** flipMeter)
+{
+    *flipMeter = nullptr;
+
+    auto createInterface = CreateInterfaceOf(device);
+    if (createInterface == nullptr)
+        return E_NOINTERFACE;
+
+    IAmdExtD3DFactory* factory = nullptr;
+    auto result = createInterface(device, __uuidof(IAmdExtD3DFactory), (void**) &factory);
+    if (FAILED(result))
+        return result;
+
+    result = factory->CreateInterface(swapChain, __uuidof(IAmdExtFlipMeter), (void**) flipMeter);
+    factory->Release();
+
+    return result;
+}
+
 struct AmdExtD3DFactory : public IAmdExtD3DFactory
 {
     IAmdExtD3DFactory* real = nullptr;
@@ -117,7 +175,9 @@ void Amdxc64Hooks::Init()
         // Pin the dll so that our hooks stay valid, mainly for Linux
         GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, L"amdxc64.dll", &moduleAmdxc64);
 
-        LOG_INFO("amdxc64.dll loaded");
+        wchar_t amdxc64Path[MAX_PATH] {};
+        GetModuleFileNameW(moduleAmdxc64, amdxc64Path, MAX_PATH);
+        LOG_INFO(L"amdxc64.dll loaded from {}", amdxc64Path);
 
         static std::mutex initMutex;
         std::scoped_lock lock(initMutex);
@@ -168,7 +228,7 @@ HRESULT STDMETHODCALLTYPE Amdxc64Hooks::hkAmdExtD3DCreateInterface(IUnknown* pOu
         factory->fsr4ForcedSupport = primaryGpu.fsr4ForcedSupport;
 
         if (o_AmdExtD3DCreateInterface != nullptr &&
-            FAILED(o_AmdExtD3DCreateInterface(pOuter, riid, (void**) &factory->real)))
+            FAILED(CreateInterfaceOf(pOuter)(pOuter, riid, (void**) &factory->real)))
         {
             factory->real = nullptr;
         }
@@ -205,6 +265,17 @@ HRESULT STDMETHODCALLTYPE Amdxc64Hooks::hkAmdExtD3DCreateInterface(IUnknown* pOu
         if (amdExtAntiLagApi == nullptr)
             amdExtAntiLagApi = new AmdExtAntiLagApi();
 
+        // The game's device, AL2 is initialized before the swapchain sets currentD3D12Device
+        if (pOuter != nullptr)
+        {
+            ID3D12Device* device = nullptr;
+            if (SUCCEEDED(pOuter->QueryInterface(IID_PPV_ARGS(&device))) && device != nullptr)
+            {
+                amdExtAntiLagApi->device = device;
+                device->Release();
+            }
+        }
+
         // Return custom one
         *ppvObject = amdExtAntiLagApi;
 
@@ -215,7 +286,15 @@ HRESULT STDMETHODCALLTYPE Amdxc64Hooks::hkAmdExtD3DCreateInterface(IUnknown* pOu
 
     else if (o_AmdExtD3DCreateInterface != nullptr)
     {
-        auto result = o_AmdExtD3DCreateInterface(pOuter, riid, ppvObject);
+        auto result = CreateInterfaceOf(pOuter)(pOuter, riid, ppvObject);
+
+        // The FSR 4 support checks of the FFX SDK and the driver rely on these
+        if (FAILED(result))
+        {
+            wchar_t iid[40] {};
+            StringFromGUID2(riid, iid, 40);
+            LOG_WARN(L"AmdExtD3DCreateInterface {} failed: {:X}", iid, (UINT) result);
+        }
 
         if (SUCCEEDED(result) && riid == __uuidof(IAmdExtD3DFactory) && *ppvObject != nullptr)
             HookFactory((IAmdExtD3DFactory*) *ppvObject);
@@ -274,7 +353,8 @@ void Amdxc64Hooks::HookFlipMeter(IAmdExtFlipMeter* flipMeter)
     }
 }
 
-HRESULT Amdxc64Hooks::SetFlipMeterConfig(IAmdExtFlipMeter* flipMeter, const AmdExtFlipMeterConfig& requested)
+HRESULT Amdxc64Hooks::SetFlipMeterConfig(IAmdExtFlipMeter* flipMeter, const AmdExtFlipMeterConfig& requested,
+                                         AmdExtFlipMeterConfig* applied)
 {
     // Modify a copy so FSR keeps its requested state and doesn't try to re-apply it
     auto config = requested;
@@ -283,8 +363,13 @@ HRESULT Amdxc64Hooks::SetFlipMeterConfig(IAmdExtFlipMeter* flipMeter, const AmdE
 
     auto result = o_FlipMeterSetConfig(flipMeter, &config);
 
-    LOG_INFO("Flip meter requested mode: {}, applied mode: {}, flags: {:X}, result: {:X}", requested.mode, config.mode,
-             config.flags, (UINT) result);
+    LOG_INFO("Flip meter requested mode: {}, applied mode: {}, generated frames: {}, flags: {:X}, pacer: {}, "
+             "status: {}, result: {:X}",
+             requested.mode, config.mode, config.generatedFrames, config.flags, config.pacerType, config.status,
+             (UINT) result);
+
+    if (applied != nullptr)
+        *applied = config;
 
     if (SUCCEEDED(result))
         State::Instance().amdFlipMeterMode = config.mode;
@@ -305,6 +390,8 @@ ULONG STDMETHODCALLTYPE Amdxc64Hooks::hkFlipMeterRelease(IAmdExtFlipMeter* This)
     std::scoped_lock lock(flipMeterMutex);
 
     auto refCount = o_FlipMeterRelease(This);
+    LOG_DEBUG("IAmdExtFlipMeter {:X} refs left: {}, caller: {}", (size_t) This, refCount,
+              Util::WhoIsTheCaller(_ReturnAddress()));
 
     if (refCount == 0 && This == flipMeter)
     {
@@ -325,7 +412,8 @@ HRESULT STDMETHODCALLTYPE Amdxc64Hooks::hkFactoryCreateInterface(IAmdExtD3DFacto
 
     if (riid == __uuidof(IAmdExtFlipMeter))
     {
-        LOG_INFO("IAmdExtFlipMeter created for swapchain: {:X}, result: {:X}", (size_t) pOuter, (UINT) result);
+        LOG_INFO("IAmdExtFlipMeter created for swapchain: {:X}, result: {:X}, caller: {}", (size_t) pOuter,
+                 (UINT) result, Util::WhoIsTheCaller(_ReturnAddress()));
 
         if (SUCCEEDED(result) && *ppvObject != nullptr)
         {
@@ -348,7 +436,13 @@ HRESULT STDMETHODCALLTYPE Amdxc64Hooks::hkFlipMeterSetConfig(IAmdExtFlipMeter* T
     if (This == flipMeter)
         flipMeterRequested = *config;
 
-    return SetFlipMeterConfig(This, *config);
+    // What the driver writes back
+    AmdExtFlipMeterConfig applied {};
+    auto result = SetFlipMeterConfig(This, *config, &applied);
+    config->pacerType = applied.pacerType;
+    config->status = applied.status;
+
+    return result;
 }
 
 // FSR reads the config back when SetConfig fails

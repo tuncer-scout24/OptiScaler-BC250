@@ -510,6 +510,13 @@ bool InputCommon::update_low_latency_tech(IUnknown* pDevice, API api, std::optio
 
     std::scoped_lock lock(create_tech_mutex);
 
+    // Another thread can have switched the output while this one waited
+    if (activeOutput == desiredMode && api == output_api && currently_active_tech.load() != nullptr)
+    {
+        delay_deinit = 0;
+        return true;
+    }
+
     if (init_tech(pDevice, api, desiredMode))
         return true;
 
@@ -727,7 +734,7 @@ InputResult InputCommon::set_async_marker(const InputContext& inputContext, ID3D
     // Can't init using ID3D12CommandQueue, can only check if available. Opti's own contexts mark frames whether or not
     // the game runs a low latency tech, without an output their markers have nowhere to go.
     if (!currently_active_tech.load())
-        return inputContext.localContext ? InputResult::Ok : InputResult::LowLatencyUpdateFail;
+        return inputContext.localContext ? InputResult::Ok : InputResult::NoReadyOutput;
 
     if (!marker_supported(inputContext.markerMode, marker_params.marker_type))
         return InputResult::InputNotSupported;
@@ -827,16 +834,13 @@ InputResult InputCommon::get_latency(const InputContext& inputContext, IUnknown*
         xell_frame_report_t* reports = (xell_frame_report_t*) latency_params;
         constexpr size_t reportCount = 64; // 64 reports, if the app allocated less then it's on them
 
-        if (activeOutput == LowLatencyMode::XeLL)
+        if (auto current_tech = currently_active_tech.load();
+            current_tech != nullptr && current_tech->get_mode() == LowLatencyMode::XeLL)
         {
-            if (auto current_tech = currently_active_tech.load())
-            {
-                auto xell_tech = std::static_pointer_cast<XeLL>(current_tech);
-                auto result = xell_tech->xellGetFramesReports(reports);
+            auto xell_tech = std::static_pointer_cast<XeLL>(current_tech);
 
-                if (result == XELL_RESULT_SUCCESS)
-                    return InputResult::Ok;
-            }
+            if (xell_tech->xellGetFramesReports(reports) == XELL_RESULT_SUCCESS)
+                return InputResult::Ok;
         }
 
         // Hopefully not too slow
@@ -1021,7 +1025,8 @@ bool InputCommon::get_timing_data(TimingData& timingDataOut)
 
         // Please don't look, just thought it would be least work
         auto pTimes = (const uint64_t*) &frameReport.simStartTime;
-        for (auto i = 0; i < 11; i++)
+        const auto timeCount = (const uint64_t*) &frameReport.gpuRenderEndTime - pTimes + 1;
+        for (auto i = 0; i < timeCount; i++)
         {
             auto& time = pTimes[i];
             if (time == 0)
@@ -1237,7 +1242,17 @@ bool InputCommon::dlssg_types_presents()
     auto fgOutput = State::Instance().activeFgOutput;
 
     return activeOutput == LowLatencyMode::AntiLag2 && fgOutput != FGOutput::FSRFG && fgOutput != FGOutput::XeFG &&
-           State::Instance().dlssgDetectedInterpolationCount > 0;
+           fgOutput != FGOutput::FlipMeter && State::Instance().dlssgDetectedInterpolationCount > 0;
+}
+
+// As FSR-FG's swapchain: the frame type right before each present of a game frame with generated frames
+void InputCommon::fg_frame_type(bool interpolated)
+{
+    if (activeOutput != LowLatencyMode::AntiLag2)
+        return;
+
+    if (auto tech = currently_active_tech.load())
+        tech->set_async_marker(nullptr, { 0, MarkerType::OUT_OF_BAND_PRESENT_START, interpolated });
 }
 
 void InputCommon::dlssg_present()
@@ -1279,6 +1294,7 @@ void InputCommon::xefg_marker(void* xellContext, uint32_t frame_id, uint32_t mar
     }
 
     auto index = marker - 80860000;
+    xefg_marker_present = present_count + 1;
 
     if (!seen[index].exchange(true))
         LOG_INFO("XeFG sends XeLL marker {} ({}), frame id {}", marker, magic_enum::enum_name(type), frame_id);
@@ -1390,8 +1406,12 @@ void InputCommon::update()
         bool multiFrame = state.dlssgLastSetMode == sl::DLSSGMode::eDynamic ||
                           (state.dlssgDetectedInterpolationCount > 1 && activeOutput != LowLatencyMode::AntiLag2);
 
+        // Another XeFG behind DLSSG (DLSS Enabler's) knows its frames too, turning XeLL off under it hangs the GPU
+        auto lastMarker = xefg_marker_present.load();
+        bool otherXefg = lastMarker != 0 && present_count + 1 - lastMarker < 20;
+
         if (!std::exchange(lastMultiFrame, multiFrame) && multiFrame && activeOutput != LowLatencyMode::Reflex &&
-            activeOutput != LowLatencyMode::FpsLimiter && !xefgPaced &&
+            activeOutput != LowLatencyMode::FpsLimiter && !xefgPaced && !otherXefg &&
             Config::Instance()->FN_ForceReflex.value_or_default() != ForceReflex::ForceEnable)
         {
             LOG_INFO("Multi frame generation, disabling {}", magic_enum::enum_name(activeOutput));
@@ -1456,7 +1476,13 @@ void InputCommon::update()
         bool driverCountsFg = fgActive && activeOutput == LowLatencyMode::Reflex && output_api == API::Vulkan &&
                               vkFg != nullptr && vkFg->OwnsSwapchain(VulkanHooks::LowLatencySwapchain());
 
-        if (xefg_paced() || driverCountsFg)
+        // The game's own DLSSG (NvngxFG input) presents its generated frames to the same swapchain, so the driver
+        // counts those too. Counted again here, a 72 FPS limit at 4x became 18 presents per second (Endfield).
+        bool driverCountsGameDlssg = !fgActive && state.dlssgDetectedInterpolationCount > 0 &&
+                                     activeOutput == LowLatencyMode::Reflex && output_api == API::Vulkan &&
+                                     VulkanHooks::LowLatencySwapchain() != VK_NULL_HANDLE;
+
+        if (xefg_paced() || driverCountsFg || driverCountsGameDlssg)
         {
             // XeLL already counts XeFG's generated frames, the driver DLSSG's
         }
@@ -1489,8 +1515,10 @@ void InputCommon::update()
 InputResult InputCommon::mark_present_start(IUnknown* pDevice)
 {
     auto fg = State::Instance().CurrentFG();
-    bool fsrfgTypesFrames =
-        State::Instance().activeFgOutput == FGOutput::FSRFG && fg != nullptr && fg->IsActive() && !fg->IsPaused();
+    // Outputs that give AntiLag 2 the frame types, it then also needs the end of the game's frame
+    auto fgOutput = State::Instance().activeFgOutput;
+    bool fsrfgTypesFrames = (fgOutput == FGOutput::FSRFG || fgOutput == FGOutput::FlipMeter) && fg != nullptr &&
+                            fg->IsActive() && !fg->IsPaused();
 
     // UE only sends simulation markers
     bool marksEnds =
@@ -1589,6 +1617,34 @@ xell_context_handle_t InputCommon::acquire_xefg_xell(IUnknown* pDevice)
     xefg_started_output = output;
 
     return (xell_context_handle_t) own->get_tech_context();
+}
+
+void InputCommon::vk_device_destroyed(void* device)
+{
+    if (device == nullptr || output_api != API::Vulkan)
+        return;
+
+    auto usesDevice = [device]()
+    {
+        auto tech = currently_active_tech.load();
+
+        return tech != nullptr && tech->get_tech_context() == device &&
+               (tech->get_mode() == LowLatencyMode::Reflex || tech->get_mode() == LowLatencyMode::AntiLagVk);
+    };
+
+    // Checked before the lock too, AntiLag 2 on dxvk can destroy a device while an output switch holds it
+    if (!usesDevice())
+        return;
+
+    std::scoped_lock lock(create_tech_mutex);
+
+    if (!usesDevice())
+        return;
+
+    LOG_INFO("Low latency output's Vulkan device is destroyed, the output restarts on the next device");
+
+    deinit_current_tech();
+    activeOutput = LowLatencyMode::None;
 }
 
 void InputCommon::release_xefg_xell()
